@@ -649,7 +649,7 @@ async function uninstallInstalledMod(id: string): Promise<void> {
 
 async function runGame(gameDir: string, useSKSE: boolean): Promise<void> {
   await withBusy(useSKSE ? "Starting Skyrim with SKSE..." : "Starting Skyrim...", async () => {
-    const message = await invoke<string>("run_skyrim", { game_dir: gameDir, use_skse: useSKSE });
+    const message = await invoke<string>("run_skyrim", { gameDir, useSKSE });
     state.status = message;
   });
 }
