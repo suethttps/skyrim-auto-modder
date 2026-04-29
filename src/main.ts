@@ -1,38 +1,137 @@
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import checkIcon from "lucide-static/icons/check.svg?raw";
+import keyIcon from "lucide-static/icons/key-round.svg?raw";
+import downloadIcon from "lucide-static/icons/download.svg?raw";
+import folderIcon from "lucide-static/icons/folder.svg?raw";
+import folderOpenIcon from "lucide-static/icons/folder-open.svg?raw";
+import folderSearchIcon from "lucide-static/icons/folder-search.svg?raw";
+import listIcon from "lucide-static/icons/list.svg?raw";
+import packageIcon from "lucide-static/icons/package.svg?raw";
+import playIcon from "lucide-static/icons/play.svg?raw";
+import radarIcon from "lucide-static/icons/radar.svg?raw";
+import refreshCwIcon from "lucide-static/icons/refresh-cw.svg?raw";
+import shieldIcon from "lucide-static/icons/shield.svg?raw";
+import trashIcon from "lucide-static/icons/trash-2.svg?raw";
 import "./styles.css";
 
-// Imports from new modules
-import { state } from "./state";
-import { icon, escapeHtml } from "./utils";
-import type { SkyrimInstallation } from "./types";
-import { 
-  scanSkyrimInstallations, 
-  validateInstallationPath, 
-  selectInstallation,
-  runGame 
-} from "./installation";
-import { 
-  installModsFromLinks, 
-  installNexusApiKey, 
-  loadNexusAuthStatus,
-  loadInstallLogs,
-  clearInstallLogs
-} from "./installer";
-import { 
-  loadInstalledMods, 
-  uninstallMod 
-} from "./mods";
+type SkyrimInstallation = {
+  name: string;
+  game_dir: string;
+  data_dir: string | null;
+  exe_path: string | null;
+  skse_loader_path: string | null;
+  steam_app_manifest: string | null;
+  valid: boolean;
+  issues: string[];
+};
 
-// Initialize DOM
+type SavesLocation = {
+  name: string;
+  path: string;
+  exists: boolean;
+  save_count: number;
+};
+
+type ModInstallResult = {
+  name: string;
+  source_url: string;
+  archive_path: string;
+  staging_dir: string;
+  installed_to: string;
+  copied_files: number;
+  installed_mod_id: string;
+  warnings: string[];
+};
+
+type InstalledFile = {
+  path: string;
+  existed_before: boolean;
+};
+
+type InstalledMod = {
+  id: string;
+  name: string;
+  source_url: string;
+  archive_path: string;
+  staging_dir: string;
+  game_dir: string;
+  installed_to: string;
+  installed_at: number;
+  copied_files: InstalledFile[];
+  warnings: string[];
+};
+
+type UninstallResult = {
+  id: string;
+  name: string;
+  removed_files: number;
+  skipped_files: number;
+  archive_path: string;
+};
+
+type NexusAuthStatus = {
+  configured: boolean;
+  user_name: string | null;
+  is_premium: boolean | null;
+};
+
+type InstallLog = {
+  id?: string;
+  timestamp?: number;
+  action?: string;
+  url: string;
+  ok: boolean;
+  message: string;
+  mod_id?: string | null;
+  mod_name?: string | null;
+  result?: ModInstallResult;
+};
+
+type AppState = {
+  installations: SkyrimInstallation[];
+  selected: SkyrimInstallation | null;
+  activeTab: "installer" | "mods";
+  manualPath: string;
+  modLinks: string;
+  nexusApiKey: string;
+  nexusStatus: NexusAuthStatus;
+  installedMods: InstalledMod[];
+  installLog: InstallLog[];
+  savesLocations: SavesLocation[];
+  status: string;
+  busy: boolean;
+};
+
+const state: AppState = {
+  installations: [],
+  selected: null,
+  activeTab: "installer",
+  manualPath: "",
+  modLinks: "",
+  nexusApiKey: "",
+  nexusStatus: {
+    configured: false,
+    user_name: null,
+    is_premium: null
+  },
+  installedMods: [],
+  installLog: [],
+  savesLocations: [],
+  status: "Ready",
+  busy: false
+};
+
 const app = document.querySelector<HTMLDivElement>("#app");
+
 if (!app) {
   throw new Error("App root not found");
 }
+
 const root = app;
 
-// Error handling
 window.addEventListener("error", (event) => {
   root.innerHTML = `<main class="boot-error"><strong>Startup error</strong><p>${escapeHtml(event.message)}</p></main>`;
 });
@@ -43,7 +142,34 @@ window.addEventListener("unhandledrejection", (event) => {
   render();
 });
 
-// ===== RENDER FUNCTIONS =====
+const icons: Record<string, string> = {
+  check: checkIcon,
+  download: downloadIcon,
+  key: keyIcon,
+  folder: folderIcon,
+  "folder-open": folderOpenIcon,
+  "folder-search": folderSearchIcon,
+  list: listIcon,
+  package: packageIcon,
+  play: playIcon,
+  radar: radarIcon,
+  "refresh-cw": refreshCwIcon,
+  shield: shieldIcon,
+  trash: trashIcon
+};
+
+function icon(name: string): string {
+  return icons[name] ?? "";
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
 
 function renderInstallation(item: SkyrimInstallation, index: number): string {
   const selected = state.selected?.game_dir === item.game_dir;
@@ -272,170 +398,73 @@ function renderTopNav(): string {
   return `
     <div class="top-nav">
       <div class="tabs">
-        <button class="tab-button ${state.activeTab === "installer" ? "active" : ""}" data-tab="installer">${icon("radar")}Installer</button>
-        <button class="tab-button ${state.activeTab === "mods" ? "active" : ""}" data-tab="mods">${icon("list")}Mods</button>
+        <button class="tab ${state.activeTab === "installer" ? "active" : ""}" data-tab="installer">${icon("download")}Installer</button>
+        <button class="tab ${state.activeTab === "mods" ? "active" : ""}" data-tab="mods">${icon("list")}Mods</button>
       </div>
-      <div class="status">
-        <span class="status-indicator ${state.busy ? "busy" : "ready"}"></span>
-        <span>${escapeHtml(state.status)}</span>
-      </div>
+      <span class="pill ${apiConfigured ? "ok" : "warn"}">${apiConfigured ? "API key registered" : "API key missing"}</span>
     </div>
   `;
 }
 
 function render(): void {
-  const content = `
-    <main>
-      <header>
-        <h1>${icon("shield")} Skyrim Auto Modder</h1>
-      </header>
-      <div class="container">
-        <aside>
-          <div class="scan-controls">
-            <button id="scan" ${state.busy ? "disabled" : ""}>${icon("radar")}Scan libraries</button>
+  root.innerHTML = `
+    <main class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="mark">${icon("shield")}</div>
+          <div>
+            <h1>Skyrim Auto Modder</h1>
+            <p>Linux desktop mod workflow</p>
           </div>
-          <div class="installations">
-            ${state.installations.map(renderInstallation).join("")}
+        </div>
+
+        <div class="toolbar">
+          <button id="scan" ${state.busy ? "disabled" : ""}>${icon("radar")}Scan Steam</button>
+          <button class="secondary" id="pick-folder" ${state.busy ? "disabled" : ""}>${icon("folder")}Choose</button>
+        </div>
+
+        <label class="manual">
+          <span>Manual game folder</span>
+          <div>
+            <input id="manual-path" value="${escapeHtml(state.manualPath)}" placeholder="/path/to/Skyrim Special Edition" />
+            <button id="validate-path" title="Validate folder" ${state.busy ? "disabled" : ""}>${icon("check")}</button>
           </div>
-          <details class="manual-path">
-            <summary>Manual path</summary>
-            <div>
-              <input id="manual-path" value="${escapeHtml(state.manualPath)}" type="text" placeholder="Or paste a local folder path" />
-            </div>
-          </details>
-        </aside>
-        <section class="main">
-          ${renderTopNav()}
+        </label>
+
+        <div class="list-head">
+          <span>Detected installs</span>
+          <strong>${state.installations.length}</strong>
+        </div>
+        <div class="install-list">
+          ${
+            state.installations.length
+              ? state.installations.map(renderInstallation).join("")
+              : `<div class="list-empty">No Steam install scanned yet.</div>`
+          }
+        </div>
+      </aside>
+
+      <section class="content">
+        ${renderTopNav()}
+        <div class="content-grid">
           ${renderSelected(state.selected)}
           ${state.activeTab === "installer" ? renderInstaller() : renderInstalledMods()}
-        </section>
-      </div>
+        </div>
+        <footer>
+          <span class="${state.busy ? "pulse" : ""}">${escapeHtml(state.status)}</span>
+        </footer>
+      </section>
     </main>
   `;
-  root.innerHTML = content;
+
   bindEvents();
 }
-
-// ===== EVENT BINDING =====
-
-function bindEvents(): void {
-  // Tab navigation
-  document.querySelectorAll<HTMLButtonElement>("[data-tab]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const tab = button.dataset.tab;
-      if (tab === "installer" || tab === "mods") {
-        state.activeTab = tab;
-        render();
-      }
-    });
-  });
-
-  // Scan button
-  document.querySelector<HTMLButtonElement>("#scan")?.addEventListener("click", () => {
-    void withBusy("Scanning Steam libraries...", scanSkyrimInstallations);
-  });
-
-  // Manual path input
-  document.querySelector<HTMLInputElement>("#manual-path")?.addEventListener("input", (event) => {
-    state.manualPath = (event.target as HTMLInputElement).value;
-  });
-
-  // Manual path validation (Enter key)
-  document.querySelector<HTMLInputElement>("#manual-path")?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      const trimmed = state.manualPath.trim();
-      if (trimmed) {
-        void withBusy("Validating folder...", () => validateInstallationPath(trimmed));
-      }
-    }
-  });
-
-  // Browse button for manual path
-  const folder = document.querySelector<HTMLButtonElement>("#browse-manual-path");
-  if (folder) {
-    folder.addEventListener("click", async () => {
-      const selected = await open({ directory: true });
-      if (typeof selected === "string") {
-        state.manualPath = selected;
-        await validateInstallationPath(selected);
-        render();
-      }
-    });
-  }
-
-  // Installation selection
-  document.querySelectorAll<HTMLButtonElement>("[data-select]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const index = Number(button.dataset.select);
-      await selectInstallation(index);
-      render();
-    });
-  });
-
-  // Run game buttons
-  document.querySelector<HTMLButtonElement>("#run-game")?.addEventListener("click", async () => {
-    if (!state.selected) return;
-    await withBusy("Starting Skyrim...", () => runGame(state.selected!.game_dir, false));
-  });
-
-  document.querySelector<HTMLButtonElement>("#run-game-skse")?.addEventListener("click", async () => {
-    if (!state.selected) return;
-    await withBusy("Starting Skyrim with SKSE...", () => runGame(state.selected!.game_dir, true));
-  });
-
-  // Reveal game folder
-  document.querySelector<HTMLButtonElement>("#reveal-game")?.addEventListener("click", async () => {
-    if (!state.selected) return;
-    await revealItemInDir(state.selected.game_dir);
-  });
-
-  // Rescan
-  document.querySelector<HTMLButtonElement>("#rescan")?.addEventListener("click", () => {
-    void withBusy("Scanning Steam libraries...", scanSkyrimInstallations);
-  });
-
-  // Installer tab events
-  document.querySelector<HTMLInputElement>("#mod-links")?.addEventListener("input", (event) => {
-    state.modLinks = (event.target as HTMLInputElement).value;
-  });
-
-  document.querySelector<HTMLInputElement>("#nexus-api-key")?.addEventListener("input", (event) => {
-    state.nexusApiKey = (event.target as HTMLInputElement).value;
-  });
-
-  document.querySelector<HTMLButtonElement>("#save-nexus-key")?.addEventListener("click", () => {
-    void withBusy("Saving API key...", () => installNexusApiKey(state.nexusApiKey));
-  });
-
-  document.querySelector<HTMLButtonElement>("#install-mods")?.addEventListener("click", () => {
-    const links = state.modLinks
-      .split("\n")
-      .map((link) => link.trim())
-      .filter((link) => link.length > 0);
-    void withBusy("Installing mods...", () => installModsFromLinks(links));
-  });
-
-  document.querySelector<HTMLButtonElement>("#clear-log")?.addEventListener("click", () => {
-    void withBusy("Clearing logs...", clearInstallLogs);
-  });
-
-  // Mods tab events
-  document.querySelectorAll<HTMLButtonElement>("[data-uninstall]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const id = button.dataset.uninstall;
-      if (id) {
-        void withBusy("Uninstalling mod...", () => uninstallMod(id));
-      }
-    });
-  });
-}
-
-// ===== UTILITY FUNCTIONS =====
 
 async function withBusy(status: string, task: () => Promise<void>): Promise<void> {
   state.busy = true;
   state.status = status;
   render();
+
   try {
     await task();
   } catch (error) {
@@ -446,39 +475,342 @@ async function withBusy(status: string, task: () => Promise<void>): Promise<void
   }
 }
 
-async function setupDeepLinks(): Promise<void> {
-  const deepLinkCurrent = await getCurrent();
-  if (deepLinkCurrent && deepLinkCurrent.length > 0) {
-    await handleDeepLink(deepLinkCurrent[0]);
-  }
-
-  onOpenUrl(async (urls) => {
-    if (urls.length > 0) {
-      await handleDeepLink(urls[0]);
+async function scan(): Promise<void> {
+  await withBusy("Scanning Steam libraries...", async () => {
+    const installations = await invoke<SkyrimInstallation[]>("scan_skyrim_installations");
+    state.installations = installations;
+    state.selected = installations[0] ?? null;
+    if (state.selected) {
+      await loadSavesLocations(state.selected.game_dir);
     }
+    state.status = installations.length
+      ? `Found ${installations.length} installation${installations.length === 1 ? "" : "s"}.`
+      : "No Skyrim Special Edition install found in Steam libraries.";
   });
 }
 
-async function handleDeepLink(url: string): Promise<void> {
-  if (!url.startsWith("nxm://")) return;
-  if (!state.selected) {
-    state.status = "Please select a Skyrim installation first.";
+async function validateManualPath(path: string): Promise<void> {
+  const trimmed = path.trim();
+  if (!trimmed) {
+    state.status = "Enter or choose a Skyrim Special Edition folder first.";
+    render();
     return;
   }
 
-  state.modLinks = url;
-  state.activeTab = "installer";
-  render();
-
-  const links = [url];
-  await withBusy("Installing from deep link...", () => installModsFromLinks(links));
+  await withBusy("Validating folder...", async () => {
+    const installation = await invoke<SkyrimInstallation>("validate_skyrim_path", { path: trimmed });
+    const existingIndex = state.installations.findIndex((item) => item.game_dir === installation.game_dir);
+    if (existingIndex >= 0) {
+      state.installations[existingIndex] = installation;
+    } else {
+      state.installations = [installation, ...state.installations];
+    }
+    state.selected = installation;
+    await loadSavesLocations(installation.game_dir);
+    state.status = installation.valid ? "Folder validated." : "Folder found, but needs attention.";
+  });
 }
 
-// ===== INITIALIZATION =====
+async function installMods(): Promise<void> {
+  if (!state.selected) {
+    state.status = "Choose a Skyrim installation first.";
+    render();
+    return;
+  }
+
+  const links = state.modLinks
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (!links.length) {
+    state.status = "Paste at least one mod archive link.";
+    render();
+    return;
+  }
+
+  await withBusy(`Installing ${links.length} mod${links.length === 1 ? "" : "s"}...`, async () => {
+    await installLinks(links);
+  });
+}
+
+async function installLinks(links: string[]): Promise<void> {
+  for (const [index, url] of links.entries()) {
+    state.status = `Installing ${index + 1}/${links.length}: ${url}`;
+    render();
+
+    try {
+      const result = await invoke<ModInstallResult>("install_mod_from_url", {
+        url,
+        gameDir: state.selected?.game_dir
+      });
+      state.installLog = [
+          {
+            url,
+            ok: true,
+            message: `Copied ${result.copied_files} file${result.copied_files === 1 ? "" : "s"} into Data.`,
+            mod_id: result.installed_mod_id,
+            mod_name: result.name,
+            result
+          },
+        ...state.installLog
+      ];
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await invoke("append_install_log_entry", {
+          action: "install",
+          url,
+          ok: false,
+          message
+        });
+        state.installLog = [
+          {
+            url,
+            ok: false,
+            message
+          },
+          ...state.installLog
+        ];
+      }
+  }
+
+  await loadInstalledMods(false);
+  state.status = "Install queue finished.";
+}
+
+async function installDeepLinks(urls: string[]): Promise<void> {
+  const nxmLinks = urls.map((url) => url.trim()).filter((url) => url.startsWith("nxm://"));
+  if (!nxmLinks.length) {
+    return;
+  }
+
+  const existingLinks = state.modLinks
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const newLinks = nxmLinks.filter((url) => !existingLinks.includes(url));
+  if (newLinks.length) {
+    state.modLinks = [...existingLinks, ...newLinks].join("\n");
+  }
+
+  if (!state.selected) {
+    state.status = "Received Nexus download link, but no Skyrim installation is selected.";
+    render();
+    return;
+  }
+
+  await withBusy(`Installing ${nxmLinks.length} Nexus download${nxmLinks.length === 1 ? "" : "s"}...`, async () => {
+    await installLinks(nxmLinks);
+  });
+}
+
+async function setupDeepLinks(): Promise<void> {
+  try {
+    const startupUrls = await getCurrent();
+    if (startupUrls?.length) {
+      await installDeepLinks(startupUrls);
+    }
+
+    await onOpenUrl((urls) => {
+      void installDeepLinks(urls);
+    });
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function saveNexusKey(): Promise<void> {
+  const apiKey = state.nexusApiKey.trim();
+  if (!apiKey) {
+    state.status = "Paste a Nexus Mods API key first.";
+    render();
+    return;
+  }
+
+  await withBusy("Validating Nexus API key...", async () => {
+    state.nexusStatus = await invoke<NexusAuthStatus>("save_nexus_api_key", { apiKey });
+    state.nexusApiKey = "";
+    state.status = `Nexus connected as ${state.nexusStatus.user_name ?? "user"}.`;
+  });
+}
+
+async function loadNexusStatus(): Promise<void> {
+  try {
+    state.nexusStatus = await invoke<NexusAuthStatus>("get_nexus_auth_status");
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+  }
+  render();
+}
+
+async function loadInstalledMods(shouldRender = true): Promise<void> {
+  try {
+    state.installedMods = await invoke<InstalledMod[]>("list_installed_mods");
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+  }
+  if (shouldRender) {
+    render();
+  }
+}
+
+async function loadInstallLogs(shouldRender = true): Promise<void> {
+  try {
+    state.installLog = await invoke<InstallLog[]>("list_install_logs");
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+  }
+  if (shouldRender) {
+    render();
+  }
+}
+
+async function loadSavesLocations(gameDir: string): Promise<void> {
+  try {
+    state.savesLocations = await invoke<SavesLocation[]>("get_saves_locations", { game_dir: gameDir });
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    state.savesLocations = [];
+  }
+}
+
+async function uninstallInstalledMod(id: string): Promise<void> {
+  const mod = state.installedMods.find((item) => item.id === id);
+  if (!mod) {
+    state.status = "Installed mod was not found.";
+    render();
+    return;
+  }
+
+  const confirmed = window.confirm(`Uninstall ${mod.name}? Files that existed before this install will be preserved.`);
+  if (!confirmed) {
+    return;
+  }
+
+  await withBusy(`Uninstalling ${mod.name}...`, async () => {
+    const result = await invoke<UninstallResult>("uninstall_mod", { id });
+    await loadInstalledMods(false);
+    await loadInstallLogs(false);
+    state.status = `Uninstalled ${result.name}. Removed ${result.removed_files} file${result.removed_files === 1 ? "" : "s"}; preserved ${result.skipped_files}. Archive kept at ${result.archive_path}.`;
+  });
+}
+
+async function runGame(gameDir: string, useSKSE: boolean): Promise<void> {
+  await withBusy(useSKSE ? "Starting Skyrim with SKSE..." : "Starting Skyrim...", async () => {
+    const message = await invoke<string>("run_skyrim", { 
+      game_dir: gameDir, 
+      use_skse: useSKSE 
+    });
+    state.status = message;
+  });
+}
+
+function bindEvents(): void {
+  document.querySelectorAll<HTMLButtonElement>("[data-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const tab = button.dataset.tab;
+      if (tab === "installer" || tab === "mods") {
+        state.activeTab = tab;
+        render();
+      }
+    });
+  });
+
+  document.querySelector<HTMLButtonElement>("#scan")?.addEventListener("click", () => {
+    void scan();
+  });
+
+  document.querySelector<HTMLButtonElement>("#rescan")?.addEventListener("click", () => {
+    void scan();
+  });
+
+  document.querySelector<HTMLInputElement>("#manual-path")?.addEventListener("input", (event) => {
+    state.manualPath = (event.target as HTMLInputElement).value;
+  });
+
+  document.querySelector<HTMLButtonElement>("#validate-path")?.addEventListener("click", () => {
+    void validateManualPath(state.manualPath);
+  });
+
+  document.querySelector<HTMLTextAreaElement>("#mod-links")?.addEventListener("input", (event) => {
+    state.modLinks = (event.target as HTMLTextAreaElement).value;
+  });
+
+  document.querySelector<HTMLInputElement>("#nexus-api-key")?.addEventListener("input", (event) => {
+    state.nexusApiKey = (event.target as HTMLInputElement).value;
+  });
+
+  document.querySelector<HTMLButtonElement>("#save-nexus-key")?.addEventListener("click", () => {
+    void saveNexusKey();
+  });
+
+  document.querySelector<HTMLButtonElement>("#install-mods")?.addEventListener("click", () => {
+    void installMods();
+  });
+
+  document.querySelector<HTMLButtonElement>("#clear-log")?.addEventListener("click", () => {
+    void withBusy("Clearing install log...", async () => {
+      await invoke("clear_install_logs");
+      state.installLog = [];
+      state.status = "Install log cleared.";
+    });
+  });
+
+  document.querySelector<HTMLButtonElement>("#pick-folder")?.addEventListener("click", async () => {
+    const folder = await open({ directory: true, multiple: false, title: "Choose Skyrim Special Edition folder" });
+    if (typeof folder === "string") {
+      state.manualPath = folder;
+      await validateManualPath(folder);
+    }
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-select]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const index = Number(button.dataset.select);
+      state.selected = state.installations[index] ?? null;
+      if (state.selected) {
+        await loadSavesLocations(state.selected.game_dir);
+      }
+      state.status = state.selected ? `Selected ${state.selected.name}.` : "Selection cleared.";
+      render();
+    });
+  });
+
+  document.querySelector<HTMLButtonElement>("#reveal-game")?.addEventListener("click", async () => {
+    if (!state.selected) {
+      return;
+    }
+    await revealItemInDir(state.selected.game_dir);
+  });
+
+  document.querySelector<HTMLButtonElement>("#run-game")?.addEventListener("click", async () => {
+    if (!state.selected) {
+      return;
+    }
+    await runGame(state.selected.game_dir, false);
+  });
+
+  document.querySelector<HTMLButtonElement>("#run-game-skse")?.addEventListener("click", async () => {
+    if (!state.selected) {
+      return;
+    }
+    await runGame(state.selected.game_dir, true);
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-uninstall]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.dataset.uninstall;
+      if (id) {
+        void uninstallInstalledMod(id);
+      }
+    });
+  });
+}
 
 async function initialize(): Promise<void> {
   render();
-  await Promise.allSettled([loadNexusAuthStatus(), loadInstalledMods(false), loadInstallLogs(false), scanSkyrimInstallations()]);
+  await Promise.allSettled([loadNexusStatus(), loadInstalledMods(false), loadInstallLogs(false), scan()]);
   render();
   void setupDeepLinks();
 }
