@@ -418,6 +418,54 @@ button.tab.active {
   gap: 8px;
 }
 
+.drop-zone {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 16px;
+  padding: 18px;
+  border: 2px dashed #3a4754;
+  border-radius: 10px;
+  background: #131820;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.drop-zone.active {
+  border-color: #99c7ff;
+  background: #1a2735;
+}
+
+.drop-zone-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  background: #222b36;
+  color: #99c7ff;
+}
+
+.drop-zone-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.drop-zone-body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.drop-zone-body strong {
+  font-size: 14px;
+}
+
+.drop-zone-body p {
+  color: #9aa5b1;
+  font-size: 12px;
+}
+
 .nexus-auth {
   display: grid;
   grid-template-columns: minmax(0, 1fr) max-content minmax(240px, 420px);
@@ -654,7 +702,8 @@ footer {
     grid-template-columns: 1fr;
   }
 
-  .nexus-auth {
+  .nexus-auth,
+  .drop-zone {
     grid-template-columns: 1fr;
   }
 

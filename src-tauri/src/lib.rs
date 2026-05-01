@@ -411,30 +411,79 @@ fn install_mod_from_url(url: String, game_dir: String) -> Result<ModInstallResul
     let archive_path = workspace.join(&filename);
     download_file(&source_url, &archive_path)?;
 
+    install_from_archive_file(&archive_path, url, &game_dir, &data_dir, &filename)
+}
+
+#[tauri::command]
+// → Function: install_mod_from_archive()
+fn install_mod_from_archive(path: String, game_dir: String) -> Result<ModInstallResult, String> {
+    let game_dir = PathBuf::from(game_dir);
+    let installation = inspect_installation(&game_dir);
+    let data_dir = installation
+        .data_dir
+        .as_ref()
+        .map(PathBuf::from)
+        .ok_or_else(|| "A valid Skyrim Data folder is required before installing mods.".to_string())?;
+
+    let archive_path = PathBuf::from(&path);
+    if !archive_path.is_file() {
+        return Err(format!("Archive file does not exist: {path}"));
+    }
+
+    let extension = archive_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !matches!(extension.as_str(), "zip" | "7z" | "rar") {
+        return Err("Only .zip, .7z, and .rar archives are supported.".to_string());
+    }
+
+    ensure_command_exists("bsdtar")?;
+
+    let filename = archive_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(sanitize_filename)
+        .unwrap_or_else(|| format!("mod-{}.archive", timestamp()));
+
+    install_from_archive_file(&archive_path, &path, &game_dir, &data_dir, &filename)
+}
+
+// → Function: install_from_archive_file()
+fn install_from_archive_file(
+    archive_path: &Path,
+    source_label: &str,
+    game_dir: &Path,
+    data_dir: &Path,
+    original_filename: &str,
+) -> Result<ModInstallResult, String> {
     let mod_name = archive_path
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("mod")
         .to_string();
-    let staging_dir = app_data_dir()?.join("staging").join(format!("{}-{}", sanitize_filename(&mod_name), timestamp()));
+    let staging_dir = app_data_dir()?
+        .join("staging")
+        .join(format!("{}-{}", sanitize_filename(&mod_name), timestamp()));
     fs::create_dir_all(&staging_dir).map_err(|err| format!("Could not create staging folder: {err}"))?;
-    extract_archive(&archive_path, &staging_dir)?;
+    extract_archive(archive_path, &staging_dir)?;
 
     let install_root = detect_install_root(&staging_dir)?;
-    let copied_files = install_extracted_mod(&install_root, &game_dir, &data_dir)
+    let copied_files = install_extracted_mod(&install_root, game_dir, data_dir)
         .map_err(|err| format!("Could not install files: {err}"))?;
     let warnings = detect_install_warnings(&install_root);
     let installed_at = timestamp();
     let installed_mod_id = format!("{}-{installed_at}", sanitize_filename(&mod_name));
-    let local_archive_path = copy_archive_to_local_store(&archive_path, &filename)?;
+    let local_archive_path = copy_archive_to_local_store(archive_path, original_filename)?;
     let installed_mod = InstalledMod {
         id: installed_mod_id.clone(),
         name: mod_name.clone(),
-        source_url: url.to_string(),
+        source_url: source_label.to_string(),
         archive_path: path_to_string(&local_archive_path),
         staging_dir: path_to_string(&staging_dir),
-        game_dir: path_to_string(&game_dir),
-        installed_to: path_to_string(&data_dir),
+        game_dir: path_to_string(game_dir),
+        installed_to: path_to_string(data_dir),
         installed_at,
         copied_files: copied_files.clone(),
         warnings: warnings.clone(),
@@ -444,19 +493,23 @@ fn install_mod_from_url(url: String, game_dir: String) -> Result<ModInstallResul
         id: format!("install-{installed_mod_id}-{installed_at}"),
         timestamp: installed_at,
         action: "install".to_string(),
-        url: url.to_string(),
+        url: source_label.to_string(),
         ok: true,
-        message: format!("Copied {} file{} into Data.", copied_files.len(), if copied_files.len() == 1 { "" } else { "s" }),
+        message: format!(
+            "Copied {} file{} into Data.",
+            copied_files.len(),
+            if copied_files.len() == 1 { "" } else { "s" }
+        ),
         mod_id: Some(installed_mod_id.clone()),
         mod_name: Some(mod_name.clone()),
     })?;
 
     Ok(ModInstallResult {
         name: mod_name,
-        source_url: url.to_string(),
+        source_url: source_label.to_string(),
         archive_path: path_to_string(&local_archive_path),
         staging_dir: path_to_string(&staging_dir),
-        installed_to: path_to_string(&data_dir),
+        installed_to: path_to_string(data_dir),
         copied_files: copied_files.len(),
         installed_mod_id,
         warnings,
@@ -1380,6 +1433,7 @@ pub fn run() {
             clear_install_logs,
             append_install_log_entry,
             install_mod_from_url,
+            install_mod_from_archive,
             get_saves_locations,
             run_skyrim
         ])

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -308,6 +309,15 @@ function renderInstaller(): string {
         <span class="pill ${state.selected ? "ok" : "warn"}">${state.selected ? "Target selected" : "No target"}</span>
       </div>
 
+      <div class="drop-zone" id="drop-zone">
+        <div class="drop-zone-icon">${icon("package")}</div>
+        <div class="drop-zone-body">
+          <strong>Arraste arquivos .zip, .7z ou .rar aqui</strong>
+          <p>Os mods serão extraídos e instalados automaticamente na pasta Data.</p>
+        </div>
+        <button class="secondary" id="pick-archives" ${state.busy || !state.selected ? "disabled" : ""}>${icon("folder")}Escolher arquivos</button>
+      </div>
+
       <div class="nexus-auth">
         <div>
           <strong>Nexus Mods API</strong>
@@ -578,6 +588,116 @@ async function installLinks(links: string[]): Promise<void> {
   state.status = "Install queue finished.";
 }
 
+function isSupportedArchive(path: string): boolean {
+  return /\.(zip|7z|rar)$/i.test(path);
+}
+
+async function installArchiveFiles(paths: string[]): Promise<void> {
+  if (!state.selected) {
+    state.status = "Choose a Skyrim installation first before installing mods.";
+    render();
+    return;
+  }
+
+  const supported = paths.filter(isSupportedArchive);
+  const skipped = paths.length - supported.length;
+
+  if (!supported.length) {
+    state.status = "Only .zip, .7z, and .rar archives are supported.";
+    render();
+    return;
+  }
+
+  await withBusy(`Installing ${supported.length} mod${supported.length === 1 ? "" : "s"}...`, async () => {
+    for (const [index, path] of supported.entries()) {
+      state.status = `Installing ${index + 1}/${supported.length}: ${path}`;
+      render();
+
+      try {
+        const result = await invoke<ModInstallResult>("install_mod_from_archive", {
+          path,
+          gameDir: state.selected?.game_dir
+        });
+        state.installLog = [
+          {
+            url: path,
+            ok: true,
+            message: `Copied ${result.copied_files} file${result.copied_files === 1 ? "" : "s"} into Data.`,
+            mod_id: result.installed_mod_id,
+            mod_name: result.name,
+            result
+          },
+          ...state.installLog
+        ];
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await invoke("append_install_log_entry", {
+          action: "install",
+          url: path,
+          ok: false,
+          message
+        });
+        state.installLog = [
+          {
+            url: path,
+            ok: false,
+            message
+          },
+          ...state.installLog
+        ];
+      }
+    }
+
+    await loadInstalledMods(false);
+    state.status = skipped
+      ? `Install queue finished. Skipped ${skipped} unsupported file${skipped === 1 ? "" : "s"}.`
+      : "Install queue finished.";
+  });
+}
+
+async function pickArchiveFiles(): Promise<void> {
+  if (!state.selected) {
+    state.status = "Choose a Skyrim installation first before installing mods.";
+    render();
+    return;
+  }
+
+  const selection = await open({
+    multiple: true,
+    title: "Choose mod archives",
+    filters: [{ name: "Mod archives", extensions: ["zip", "7z", "rar"] }]
+  });
+  if (!selection) {
+    return;
+  }
+  const paths = Array.isArray(selection) ? selection : [selection];
+  if (!paths.length) {
+    return;
+  }
+  await installArchiveFiles(paths);
+}
+
+async function setupDragDrop(): Promise<void> {
+  try {
+    await getCurrentWebview().onDragDropEvent((event) => {
+      const payload = event.payload;
+      if (payload.type === "enter" || payload.type === "over") {
+        document.querySelector("#drop-zone")?.classList.add("active");
+      } else if (payload.type === "leave") {
+        document.querySelector("#drop-zone")?.classList.remove("active");
+      } else if (payload.type === "drop") {
+        document.querySelector("#drop-zone")?.classList.remove("active");
+        if (payload.paths?.length) {
+          void installArchiveFiles(payload.paths);
+        }
+      }
+    });
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
 async function installDeepLinks(urls: string[]): Promise<void> {
   const nxmLinks = urls.map((url) => url.trim()).filter((url) => url.startsWith("nxm://"));
   if (!nxmLinks.length) {
@@ -749,6 +869,10 @@ function bindEvents(): void {
     void installMods();
   });
 
+  document.querySelector<HTMLButtonElement>("#pick-archives")?.addEventListener("click", () => {
+    void pickArchiveFiles();
+  });
+
   document.querySelector<HTMLButtonElement>("#clear-log")?.addEventListener("click", () => {
     void withBusy("Clearing install log...", async () => {
       await invoke("clear_install_logs");
@@ -813,6 +937,7 @@ async function initialize(): Promise<void> {
   await Promise.allSettled([loadNexusStatus(), loadInstalledMods(false), loadInstallLogs(false), scan()]);
   render();
   void setupDeepLinks();
+  void setupDragDrop();
 }
 
 void initialize();
